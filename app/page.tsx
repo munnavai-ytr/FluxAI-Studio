@@ -40,11 +40,9 @@ export default function StudioAppPage() {
 
   function handleUseTemplate(template: VideoTemplate) {
     setSelectedTemplate(template);
-    setMode(template.defaultMode);
+    setMode('describe');
     setAspectRatio(template.aspectRatio);
-    setPromptText(
-      template.defaultMode === 'script' ? template.starterScript : template.starterPrompt
-    );
+    setPromptText(template.starterPrompt);
     setActiveProject(null);
     setActiveTab('new-project');
   }

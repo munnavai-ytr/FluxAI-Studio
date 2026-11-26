@@ -1,11 +1,12 @@
 'use client';
 
 import { useCallback, useSyncExternalStore } from 'react';
-import type { VideoProject } from '@/types/studio';
+import type { VideoProject, VideoScene } from '@/types/studio';
 
 const API_KEY_STORAGE = 'framescript_gemini_api_key';
 const KEY_VERIFIED_AT_STORAGE = 'framescript_gemini_verified_at';
-const PROJECTS_STORAGE = 'framescript_projects_v1';
+const PROJECTS_STORAGE = 'projectHistory';
+const LEGACY_PROJECTS_STORAGE = 'framescript_projects_v1';
 
 interface StudioSnapshot {
   hydrated: boolean;
@@ -42,6 +43,91 @@ function notifyListeners() {
   }
 }
 
+function normalizeStoredProject(raw: unknown): VideoProject | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const item = raw as Record<string, unknown>;
+  const rawScenes = Array.isArray(item.scenes) ? item.scenes : [];
+  if (rawScenes.length === 0) return null;
+
+  let cursor = 0;
+  const scenes: VideoScene[] = rawScenes.map((s, idx) => {
+    const sc = (s && typeof s === 'object' ? s : {}) as Record<string, unknown>;
+    const legacyDuration = Number(sc.durationSec);
+    const startVal = Number(sc.startSec);
+    const endVal = Number(sc.endSec);
+
+    const startSec = Number.isFinite(startVal) ? startVal : cursor;
+    const endSec =
+      Number.isFinite(endVal) && endVal > startSec
+        ? endVal
+        : startSec + (Number.isFinite(legacyDuration) && legacyDuration > 0 ? legacyDuration : 5);
+    cursor = endSec;
+
+    const bg = Array.isArray(sc.bgGradient) && sc.bgGradient.length >= 2
+      ? ([String(sc.bgGradient[0]), String(sc.bgGradient[1])] as [string, string])
+      : (['#0B0D12', '#1B1E3A'] as [string, string]);
+
+    const motionStyle =
+      sc.motionStyle === 'kinetic-pop' ||
+      sc.motionStyle === 'slide-zoom' ||
+      sc.motionStyle === 'typewriter-glow' ||
+      sc.motionStyle === 'split-card'
+        ? sc.motionStyle
+        : 'kinetic-pop';
+
+    return {
+      id: typeof sc.id === 'string' && sc.id ? sc.id : `scene-${idx + 1}`,
+      startSec,
+      endSec,
+      headline: typeof sc.headline === 'string' ? sc.headline : `Scene ${idx + 1}`,
+      subtext:
+        typeof sc.subtext === 'string'
+          ? sc.subtext
+          : typeof sc.visualCue === 'string'
+            ? sc.visualCue
+            : '',
+      caption:
+        typeof sc.caption === 'string'
+          ? sc.caption
+          : typeof sc.voiceover === 'string'
+            ? sc.voiceover
+            : '',
+      motionStyle,
+      bgGradient: bg,
+      accentColor: typeof sc.accentColor === 'string' ? sc.accentColor : '#6366F1',
+    };
+  });
+
+  const aspectRatio =
+    item.aspectRatio === '16:9' || item.aspectRatio === '1:1'
+      ? item.aspectRatio
+      : '9:16';
+
+  return {
+    id: typeof item.id === 'string' ? item.id : `proj_${Date.now()}`,
+    title: typeof item.title === 'string' ? item.title : 'Untitled Video',
+    mode: item.mode === 'script' ? 'script' : 'describe',
+    promptText: typeof item.promptText === 'string' ? item.promptText : '',
+    aspectRatio,
+    totalDurationSec:
+      Number.isFinite(Number(item.totalDurationSec)) && Number(item.totalDurationSec) > 0
+        ? Number(item.totalDurationSec)
+        : cursor,
+    theme: typeof item.theme === 'string' ? item.theme : 'Dark Studio Kinetic',
+    scenes,
+    renderCode: typeof item.renderCode === 'string' ? item.renderCode : '',
+    timestamp:
+      typeof item.timestamp === 'string'
+        ? item.timestamp
+        : typeof item.createdAt === 'string'
+          ? item.createdAt
+          : new Date().toISOString(),
+    templateId: typeof item.templateId === 'string' ? item.templateId : undefined,
+    templateTitle:
+      typeof item.templateTitle === 'string' ? item.templateTitle : undefined,
+  };
+}
+
 function subscribe(listener: () => void) {
   listeners.add(listener);
 
@@ -67,7 +153,9 @@ function getSnapshot(): StudioSnapshot {
   try {
     const nextKey = window.localStorage.getItem(API_KEY_STORAGE) ?? '';
     const nextVerifiedAt = window.localStorage.getItem(KEY_VERIFIED_AT_STORAGE);
-    const nextRawProjects = window.localStorage.getItem(PROJECTS_STORAGE);
+    const nextRawProjects =
+      window.localStorage.getItem(PROJECTS_STORAGE) ??
+      window.localStorage.getItem(LEGACY_PROJECTS_STORAGE);
 
     if (
       nextKey === cachedKey &&
@@ -82,9 +170,13 @@ function getSnapshot(): StudioSnapshot {
       if (nextRawProjects) {
         try {
           const parsed = JSON.parse(nextRawProjects) as unknown;
-          cachedProjects = Array.isArray(parsed)
-            ? (parsed as VideoProject[])
-            : EMPTY_PROJECTS;
+          if (Array.isArray(parsed)) {
+            cachedProjects = parsed
+              .map(normalizeStoredProject)
+              .filter((p): p is VideoProject => p !== null);
+          } else {
+            cachedProjects = EMPTY_PROJECTS;
+          }
         } catch {
           cachedProjects = EMPTY_PROJECTS;
         }

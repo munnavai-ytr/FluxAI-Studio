@@ -4,6 +4,12 @@ export type AspectRatio = '9:16' | '16:9' | '1:1';
 
 export type InputMode = 'describe' | 'script';
 
+export type MotionStyle =
+  | 'kinetic-pop'
+  | 'slide-zoom'
+  | 'typewriter-glow'
+  | 'split-card';
+
 export type TemplateVisualKind =
   | 'kinetic-typography'
   | 'tech-explainer'
@@ -27,12 +33,15 @@ export interface VideoTemplate {
 }
 
 export interface VideoScene {
-  index: number;
-  durationSec: number;
+  id: string;
+  startSec: number;
+  endSec: number;
   headline: string;
-  visualCue: string;
-  motionDirective: string;
-  voiceover: string;
+  subtext: string;
+  caption: string;
+  motionStyle: MotionStyle;
+  bgGradient: [string, string];
+  accentColor: string;
 }
 
 export interface VideoProject {
@@ -41,15 +50,11 @@ export interface VideoProject {
   mode: InputMode;
   promptText: string;
   aspectRatio: AspectRatio;
+  totalDurationSec: number;
+  theme: string;
+  scenes: VideoScene[];
+  renderCode: string;
+  timestamp: string;
   templateId?: string;
   templateTitle?: string;
-  createdAt: string;
-  totalDurationSec: number;
-  scenes: VideoScene[];
-}
-
-export interface KeyConnectionState {
-  hasKey: boolean;
-  verified: boolean;
-  lastTestedAt?: string;
 }

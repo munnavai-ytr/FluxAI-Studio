@@ -9,9 +9,11 @@ import {
   Film,
   KeyRound,
   Loader2,
+  Play,
   Plus,
   Trash2,
 } from 'lucide-react';
+import { testGeminiRestKey } from '@/lib/gemini-planner';
 import type { VideoProject } from '@/types/studio';
 
 interface ProfileViewProps {
@@ -78,44 +80,24 @@ export function ProfileView({
     setIsTesting(true);
     setFeedback(null);
 
-    try {
-      const response = await fetch('/api/gemini/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: keyToTest }),
-      });
+    const result = await testGeminiRestKey(keyToTest);
+    setIsTesting(false);
 
-      const data = (await response.json()) as {
-        ok?: boolean;
-        model?: string;
-        verifiedAt?: string;
-        error?: string;
-      };
-
-      if (!response.ok || !data.ok) {
-        setFeedback({
-          type: 'error',
-          message: data.error ?? 'Connection test failed.',
-        });
-        return;
-      }
-
-      const timestamp = data.verifiedAt ?? new Date().toISOString();
-      onSaveApiKey(keyToTest, timestamp);
-      onMarkKeyVerified(timestamp);
-      setDraftKey(keyToTest);
-      setFeedback({
-        type: 'success',
-        message: `Connected successfully using ${data.model ?? 'gemini-4-hydrogen'}.`,
-      });
-    } catch {
+    if (!result.ok) {
       setFeedback({
         type: 'error',
-        message: 'Unable to reach verification endpoint. Please check your network.',
+        message: result.error,
       });
-    } finally {
-      setIsTesting(false);
+      return;
     }
+
+    onSaveApiKey(keyToTest, result.verifiedAt);
+    onMarkKeyVerified(result.verifiedAt);
+    setDraftKey(keyToTest);
+    setFeedback({
+      type: 'success',
+      message: 'Connected successfully using gemini-2.5-flash.',
+    });
   }
 
   function handleRemoveKey() {
@@ -135,7 +117,7 @@ export function ProfileView({
           Profile &amp; BYOK Settings
         </h1>
         <p className="text-sm sm:text-base text-slate-400">
-          Manage your local Gemini API key and browse saved video blueprints.
+          Manage your local Gemini API key and replay saved video projects.
         </p>
       </header>
 
@@ -301,7 +283,7 @@ export function ProfileView({
                 No saved projects yet
               </h3>
               <p className="text-sm text-slate-400">
-                Projects you generate are stored locally in your browser for quick access.
+                Projects you generate are saved automatically to projectHistory in your browser.
               </p>
             </div>
             <button
@@ -320,7 +302,11 @@ export function ProfileView({
                 key={project.id}
                 className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-4 first:pt-0 last:pb-0"
               >
-                <div className="min-w-0 space-y-1">
+                <button
+                  type="button"
+                  onClick={() => onOpenProject(project)}
+                  className="min-w-0 flex-1 text-left space-y-1 rounded-xl p-1 -m-1 hover:bg-[#1B2130]/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1]"
+                >
                   <h3 className="font-display text-base font-semibold text-white truncate">
                     {project.title}
                   </h3>
@@ -329,21 +315,28 @@ export function ProfileView({
                     <span aria-hidden="true">·</span>
                     <span className="capitalize">{project.mode}</span>
                     <span aria-hidden="true">·</span>
-                    <span className="font-mono tabular-nums">{project.totalDurationSec}s</span>
+                    <span className="font-mono tabular-nums">
+                      {project.totalDurationSec}s
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono tabular-nums">
+                      {project.scenes.length} scenes
+                    </span>
                     <span aria-hidden="true">·</span>
                     <span className="tabular-nums">
-                      {new Date(project.createdAt).toLocaleDateString()}
+                      {new Date(project.timestamp).toLocaleDateString()}
                     </span>
                   </div>
-                </div>
+                </button>
 
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
                     onClick={() => onOpenProject(project)}
-                    className="min-h-[44px] rounded-xl bg-[#1B2130] hover:bg-[#232B3E] border border-[#2B3347] px-4 py-2 text-xs font-medium text-white transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1]"
+                    className="min-h-[44px] inline-flex items-center gap-1.5 rounded-xl bg-[#1B2130] hover:bg-[#232B3E] border border-[#2B3347] px-4 py-2 text-xs font-medium text-white transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1]"
                   >
-                    Open
+                    <Play className="h-3.5 w-3.5 text-[#8B5CF6]" aria-hidden="true" />
+                    <span>Open &amp; Play</span>
                   </button>
                   <button
                     type="button"
