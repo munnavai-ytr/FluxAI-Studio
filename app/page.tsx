@@ -30,11 +30,14 @@ export default function StudioAppPage() {
     apiKey,
     hasApiKey,
     verifiedAt,
+    selectedModel,
     projects,
     saveApiKey,
     markKeyVerified,
     removeApiKey,
+    setSelectedModel,
     addProject,
+    updateProject,
     deleteProject,
   } = useStudioStorage();
 
@@ -71,6 +74,11 @@ export default function StudioAppPage() {
   function handleProjectGenerated(project: VideoProject) {
     addProject(project);
     setActiveProject(project);
+  }
+
+  function handleUpdateActiveProject(project: VideoProject) {
+    setActiveProject(project);
+    updateProject(project);
   }
 
   function handleOpenProject(project: VideoProject) {
@@ -112,6 +120,7 @@ export default function StudioAppPage() {
                 <NewProjectView
                   apiKey={apiKey}
                   hasApiKey={hydrated && hasApiKey}
+                  selectedModel={selectedModel}
                   mode={mode}
                   promptText={promptText}
                   aspectRatio={aspectRatio}
@@ -120,8 +129,10 @@ export default function StudioAppPage() {
                   onModeChange={handleModeChange}
                   onPromptTextChange={setPromptText}
                   onAspectRatioChange={setAspectRatio}
+                  onSelectModel={setSelectedModel}
                   onClearTemplate={handleClearTemplate}
                   onProjectGenerated={handleProjectGenerated}
+                  onUpdateActiveProject={handleUpdateActiveProject}
                   onGoToProfile={() => setActiveTab('profile')}
                 />
               )}
@@ -132,10 +143,12 @@ export default function StudioAppPage() {
                   apiKey={apiKey}
                   hasApiKey={hydrated && hasApiKey}
                   verifiedAt={verifiedAt}
+                  selectedModel={selectedModel}
                   projects={projects}
                   onSaveApiKey={saveApiKey}
                   onMarkKeyVerified={markKeyVerified}
                   onRemoveApiKey={removeApiKey}
+                  onSelectModel={setSelectedModel}
                   onStartNewProject={() => setActiveTab('new-project')}
                   onOpenProject={handleOpenProject}
                   onDeleteProject={deleteProject}

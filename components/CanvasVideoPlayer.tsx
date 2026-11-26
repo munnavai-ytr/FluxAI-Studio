@@ -2,10 +2,15 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
+  AlertCircle,
+  Captions,
+  CaptionsOff,
   Check,
   Code2,
   Copy,
+  Download,
   Film,
+  Loader2,
   Pause,
   Play,
   RotateCcw,
@@ -102,10 +107,11 @@ function renderSceneFrame(
   project: VideoProject,
   timeSec: number,
   width: number,
-  height: number
+  height: number,
+  showCaptions: boolean
 ) {
   const total = Math.max(1, project.totalDurationSec);
-  const t = ((timeSec % total) + total) % total;
+  const t = Math.min(total - 0.001, Math.max(0, timeSec));
 
   let activeIndex = project.scenes.findIndex(
     (s) => t >= s.startSec && t < s.endSec
@@ -173,8 +179,8 @@ function renderSceneFrame(
   ctx.save();
   for (let i = 0; i < 18; i++) {
     const seed = i * 1.37;
-    const px = ((Math.sin(seed * 4.1 + t * 0.28) * 0.5 + 0.5) * width);
-    const py = ((Math.cos(seed * 3.3 + t * 0.35 + i * 0.2) * 0.5 + 0.5) * height);
+    const px = (Math.sin(seed * 4.1 + t * 0.28) * 0.5 + 0.5) * width;
+    const py = (Math.cos(seed * 3.3 + t * 0.35 + i * 0.2) * 0.5 + 0.5) * height;
     const radius = 1.5 + (i % 3) * 1.4;
     ctx.fillStyle = hexToRgba(scene.accentColor, 0.18 + (i % 4) * 0.08);
     ctx.beginPath();
@@ -209,7 +215,6 @@ function renderSceneFrame(
     }
   }
 
-  // Scene Badge Text (Top Left)
   ctx.fillStyle = 'rgba(248, 250, 252, 0.72)';
   ctx.font = `600 ${width < 800 ? 22 : 18}px "JetBrains Mono", monospace`;
   ctx.textAlign = 'left';
@@ -250,7 +255,6 @@ function renderSceneFrame(
       ctx.fillText(line, width / 2, startY + idx * lineHeight);
     });
 
-    // Accent Divider Bar
     const barW = Math.min(160, width * 0.22) * easeOutCubic(sceneElapsed / 0.6);
     const afterHeadlineY = startY + lines.length * lineHeight - lineHeight * 0.2;
     ctx.fillStyle = scene.accentColor;
@@ -285,7 +289,6 @@ function renderSceneFrame(
     const blockH = lines.length * lineHeight;
     const startY = centerY - blockH / 2 + lineHeight * 0.4;
 
-    // Vertical Accent Bar
     ctx.fillStyle = scene.accentColor;
     drawRoundedRect(ctx, leftX - 24, startY - lineHeight * 0.45, 7, blockH, 4);
     ctx.fill();
@@ -351,7 +354,6 @@ function renderSceneFrame(
       });
     }
   } else {
-    // split-card
     const cardW = width - sidePad * 2;
     const cardH = isPortrait ? height * 0.38 : height * 0.48;
     const cardX = sidePad;
@@ -395,8 +397,8 @@ function renderSceneFrame(
 
   ctx.restore();
 
-  // 6. Synced Bottom Caption Bar
-  if (scene.caption) {
+  // 6. Synced Bottom Caption Bar (Controlled by showCaptions)
+  if (showCaptions && scene.caption) {
     ctx.save();
     ctx.globalAlpha = enterProgress * exitAlpha;
     const captionFontSize = isPortrait ? 27 : 24;
@@ -418,7 +420,6 @@ function renderSceneFrame(
     drawRoundedRect(ctx, boxX, boxY, boxW, boxH, 16);
     ctx.stroke();
 
-    // Caption Progress Accent
     ctx.fillStyle = scene.accentColor;
     drawRoundedRect(ctx, boxX + 14, boxY, (boxW - 28) * sceneProgress, 3, 2);
     ctx.fill();
@@ -427,12 +428,34 @@ function renderSceneFrame(
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     captionLines.forEach((line, idx) => {
-      const ly =
-        boxY + boxPadY + (idx + 0.5) * (captionFontSize * 1.32);
+      const ly = boxY + boxPadY + (idx + 0.5) * (captionFontSize * 1.32);
       ctx.fillText(line, width / 2, ly);
     });
     ctx.restore();
   }
+}
+
+function pickSupportedRecorderFormat(): { mimeType: string; ext: string } | null {
+  if (typeof window === 'undefined' || typeof MediaRecorder === 'undefined') {
+    return null;
+  }
+
+  const candidates = [
+    { mimeType: 'video/webm;codecs=vp9', ext: 'webm' },
+    { mimeType: 'video/webm;codecs=vp8', ext: 'webm' },
+    { mimeType: 'video/webm', ext: 'webm' },
+    { mimeType: 'video/mp4', ext: 'mp4' },
+  ];
+
+  if (typeof MediaRecorder.isTypeSupported === 'function') {
+    for (const candidate of candidates) {
+      if (MediaRecorder.isTypeSupported(candidate.mimeType)) {
+        return candidate;
+      }
+    }
+  }
+
+  return { mimeType: '', ext: 'webm' };
 }
 
 export function CanvasVideoPlayer({
@@ -442,14 +465,45 @@ export function CanvasVideoPlayer({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(() => Boolean(project));
   const [currentTime, setCurrentTime] = useState(0);
+  const [showCaptions, setShowCaptions] = useState(true);
   const [showCodeModal, setShowCodeModal] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
+  // Video export state
+  const [isRecording, setIsRecording] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exportSuccess, setExportSuccess] = useState(false);
+
   const timeRef = useRef(0);
   const lastFrameRef = useRef<number | null>(null);
+  const isRecordingRef = useRef(false);
+  const exportCancelledRef = useRef(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   const activeAspectRatio = project?.aspectRatio ?? previewAspectRatio;
   const dims = getCanvasDimensions(activeAspectRatio);
+
+  // Stop any active recording on unmount
+  useEffect(() => {
+    return () => {
+      exportCancelledRef.current = true;
+      if (
+        mediaRecorderRef.current &&
+        mediaRecorderRef.current.state !== 'inactive'
+      ) {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, []);
 
   // Real-time requestAnimationFrame render loop
   useEffect(() => {
@@ -465,28 +519,72 @@ export function CanvasVideoPlayer({
         if (lastFrameRef.current !== null) {
           const deltaSec = Math.min(0.1, (now - lastFrameRef.current) / 1000);
           const total = Math.max(1, project.totalDurationSec);
-          timeRef.current = (timeRef.current + deltaSec) % total;
-          setCurrentTime(timeRef.current);
+
+          if (isRecordingRef.current) {
+            const nextSec = timeRef.current + deltaSec;
+            if (nextSec >= total) {
+              timeRef.current = total;
+              setCurrentTime(total);
+              setExportProgress(100);
+              renderSceneFrame(
+                ctx,
+                project,
+                total - 0.01,
+                dims.width,
+                dims.height,
+                showCaptions
+              );
+
+              if (
+                mediaRecorderRef.current &&
+                mediaRecorderRef.current.state === 'recording'
+              ) {
+                mediaRecorderRef.current.stop();
+              }
+              setIsPlaying(false);
+              return;
+            }
+            timeRef.current = nextSec;
+            setCurrentTime(nextSec);
+            setExportProgress(Math.min(99, Math.round((nextSec / total) * 100)));
+          } else {
+            timeRef.current = (timeRef.current + deltaSec) % total;
+            setCurrentTime(timeRef.current);
+          }
         }
         lastFrameRef.current = now;
       } else {
         lastFrameRef.current = null;
       }
 
-      renderSceneFrame(ctx, project, timeRef.current, dims.width, dims.height);
+      renderSceneFrame(
+        ctx,
+        project,
+        timeRef.current,
+        dims.width,
+        dims.height,
+        showCaptions
+      );
       rafId = window.requestAnimationFrame(tick);
     };
 
-    renderSceneFrame(ctx, project, timeRef.current, dims.width, dims.height);
+    renderSceneFrame(
+      ctx,
+      project,
+      timeRef.current,
+      dims.width,
+      dims.height,
+      showCaptions
+    );
     rafId = window.requestAnimationFrame(tick);
 
     return () => {
       window.cancelAnimationFrame(rafId);
     };
-  }, [project, isPlaying, dims.width, dims.height]);
+  }, [project, isPlaying, dims.width, dims.height, showCaptions]);
 
   function handleSeek(nextSec: number) {
-    if (!project) return;
+    if (!project || isRecording) return;
     const clamped = Math.min(project.totalDurationSec, Math.max(0, nextSec));
     timeRef.current = clamped;
     lastFrameRef.current = null;
@@ -495,13 +593,141 @@ export function CanvasVideoPlayer({
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (canvas && ctx) {
-      renderSceneFrame(ctx, project, clamped, dims.width, dims.height);
+      renderSceneFrame(
+        ctx,
+        project,
+        clamped,
+        dims.width,
+        dims.height,
+        showCaptions
+      );
     }
   }
 
   function handleRestart() {
+    if (isRecording) return;
     handleSeek(0);
     setIsPlaying(true);
+  }
+
+  function handleCancelExport() {
+    exportCancelledRef.current = true;
+    isRecordingRef.current = false;
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state !== 'inactive'
+    ) {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // Ignore stop errors
+      }
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    setIsRecording(false);
+    setExportProgress(0);
+  }
+
+  function handleDownloadVideo() {
+    if (!project || isRecording) return;
+    setExportError(null);
+    setExportSuccess(false);
+
+    const canvas = canvasRef.current;
+    if (!canvas || typeof canvas.captureStream !== 'function') {
+      setExportError(
+        'Your browser does not support HTML5 Canvas video recording (captureStream). Try Chrome, Edge, or Firefox on desktop/Android.'
+      );
+      return;
+    }
+
+    const format = pickSupportedRecorderFormat();
+    if (!format) {
+      setExportError(
+        'MediaRecorder is not supported in this browser. You can still inspect and copy the generated Canvas code.'
+      );
+      return;
+    }
+
+    try {
+      const stream = canvas.captureStream(30);
+      streamRef.current = stream;
+
+      const recorderOptions: MediaRecorderOptions = format.mimeType
+        ? { mimeType: format.mimeType, videoBitsPerSecond: 4_000_000 }
+        : { videoBitsPerSecond: 4_000_000 };
+
+      const recorder = new MediaRecorder(stream, recorderOptions);
+      mediaRecorderRef.current = recorder;
+      const chunks: BlobPart[] = [];
+      exportCancelledRef.current = false;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+
+      recorder.onerror = () => {
+        isRecordingRef.current = false;
+        setIsRecording(false);
+        stream.getTracks().forEach((track) => track.stop());
+        setExportError('Video recording failed in this browser. Please try again.');
+      };
+
+      recorder.onstop = () => {
+        isRecordingRef.current = false;
+        stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        setIsRecording(false);
+
+        if (exportCancelledRef.current || chunks.length === 0) {
+          return;
+        }
+
+        const blobType = recorder.mimeType || format.mimeType || 'video/webm';
+        const ext = blobType.includes('mp4') ? 'mp4' : 'webm';
+        const blob = new Blob(chunks, { type: blobType });
+        const url = URL.createObjectURL(blob);
+
+        const slug = project.title
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-|-$/g, '');
+        const filename = `${slug || 'framescript-video'}-${project.aspectRatio.replace(':', 'x')}.${ext}`;
+
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+        setExportSuccess(true);
+        window.setTimeout(() => setExportSuccess(false), 3500);
+      };
+
+      // Reset to frame 0 and start real-time capture
+      timeRef.current = 0;
+      lastFrameRef.current = null;
+      setCurrentTime(0);
+      setExportProgress(0);
+      isRecordingRef.current = true;
+      setIsRecording(true);
+      setIsPlaying(true);
+
+      recorder.start(250);
+    } catch {
+      isRecordingRef.current = false;
+      setIsRecording(false);
+      setExportError(
+        'Could not start MediaRecorder in this browser. Try a modern Chromium or Firefox browser.'
+      );
+    }
   }
 
   async function handleCopyCode() {
@@ -533,7 +759,7 @@ export function CanvasVideoPlayer({
 
   return (
     <div className="rounded-2xl bg-[#141821] border border-[#232938] p-4 sm:p-5 space-y-4">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <h2 className="font-display text-base sm:text-lg font-semibold text-white truncate">
             {project ? project.title : 'Live Canvas Preview'}
@@ -545,14 +771,39 @@ export function CanvasVideoPlayer({
         </div>
 
         {project && (
-          <button
-            type="button"
-            onClick={() => setShowCodeModal(true)}
-            className="min-h-[40px] inline-flex items-center gap-1.5 rounded-xl bg-[#1B2130] hover:bg-[#232B3E] border border-[#2B3347] px-3 py-2 text-xs font-medium text-slate-200 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1]"
-          >
-            <Code2 className="h-4 w-4 text-[#8B5CF6]" aria-hidden="true" />
-            <span>View Code</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowCaptions((prev) => !prev)}
+              aria-pressed={showCaptions}
+              className={`min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1] ${
+                showCaptions
+                  ? 'bg-[#6366F1]/15 border-[#6366F1]/50 text-[#C4B5FD]'
+                  : 'bg-[#1B2130] border-[#2B3347] text-slate-400 hover:text-white'
+              }`}
+            >
+              {showCaptions ? (
+                <>
+                  <Captions className="h-4 w-4" aria-hidden="true" />
+                  <span>Captions On</span>
+                </>
+              ) : (
+                <>
+                  <CaptionsOff className="h-4 w-4" aria-hidden="true" />
+                  <span>Captions Off</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowCodeModal(true)}
+              className="min-h-[40px] inline-flex items-center gap-1.5 rounded-xl bg-[#1B2130] hover:bg-[#232B3E] border border-[#2B3347] px-3 py-2 text-xs font-medium text-slate-200 transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1]"
+            >
+              <Code2 className="h-4 w-4 text-[#8B5CF6]" aria-hidden="true" />
+              <span>View Code</span>
+            </button>
+          </div>
         )}
       </div>
 
@@ -588,15 +839,16 @@ export function CanvasVideoPlayer({
         )}
       </div>
 
-      {/* Interactive Playback Controls */}
+      {/* Interactive Playback Controls + Export */}
       {project && (
         <div className="space-y-3 pt-1">
           <div className="flex items-center gap-2 sm:gap-3">
             <button
               type="button"
               onClick={() => setIsPlaying((prev) => !prev)}
+              disabled={isRecording}
               aria-label={isPlaying ? 'Pause video' : 'Play video'}
-              className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white hover:opacity-95 transition-opacity shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B5CF6]"
+              className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white hover:opacity-95 disabled:opacity-60 transition-opacity shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B5CF6]"
             >
               {isPlaying ? (
                 <Pause className="h-4 w-4" aria-hidden="true" />
@@ -608,8 +860,9 @@ export function CanvasVideoPlayer({
             <button
               type="button"
               onClick={handleRestart}
+              disabled={isRecording}
               aria-label="Restart video"
-              className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-xl bg-[#1B2130] hover:bg-[#232B3E] border border-[#2B3347] text-slate-200 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1]"
+              className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-xl bg-[#1B2130] hover:bg-[#232B3E] border border-[#2B3347] text-slate-200 disabled:opacity-50 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1]"
             >
               <RotateCcw className="h-4 w-4" aria-hidden="true" />
             </button>
@@ -622,8 +875,9 @@ export function CanvasVideoPlayer({
                 max={project.totalDurationSec}
                 step={0.05}
                 value={currentTime}
+                disabled={isRecording}
                 onChange={(e) => handleSeek(Number(e.target.value))}
-                className="w-full h-2 rounded-lg appearance-none cursor-pointer bg-[#232938] accent-[#6366F1]"
+                className="w-full h-2 rounded-lg appearance-none cursor-pointer bg-[#232938] accent-[#6366F1] disabled:opacity-60"
               />
             </div>
 
@@ -632,7 +886,7 @@ export function CanvasVideoPlayer({
             </span>
           </div>
 
-          {/* Clickable Scene Jump Strip */}
+          {/* Scene Jump Strip */}
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
             {project.scenes.map((scene, idx) => {
               const isCurrent = idx === activeSceneIndex;
@@ -640,8 +894,9 @@ export function CanvasVideoPlayer({
                 <button
                   key={scene.id}
                   type="button"
+                  disabled={isRecording}
                   onClick={() => handleSeek(scene.startSec)}
-                  className={`min-h-[36px] px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1] ${
+                  className={`min-h-[36px] px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap shrink-0 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1] ${
                     isCurrent
                       ? 'bg-[#6366F1]/15 border-[#6366F1] text-white'
                       : 'bg-[#0B0D12] border-[#232938] text-slate-400 hover:text-white'
@@ -655,10 +910,69 @@ export function CanvasVideoPlayer({
               );
             })}
           </div>
+
+          {/* Download / Export Video Action Bar */}
+          <div className="pt-1 space-y-2.5">
+            {isRecording ? (
+              <div className="rounded-xl bg-[#0B0D12] border border-[#6366F1]/40 p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-xs font-medium text-white">
+                    <Loader2 className="h-4 w-4 animate-spin text-[#8B5CF6]" aria-hidden="true" />
+                    <span className="tabular-nums">
+                      Recording video ({exportProgress}% · {formatClock(currentTime)} /{' '}
+                      {formatClock(project.totalDurationSec)})
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCancelExport}
+                    className="min-h-[36px] rounded-lg border border-[#232938] bg-[#141821] hover:bg-[#1B2130] px-3 py-1 text-xs font-medium text-slate-300 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <div className="h-1.5 w-full rounded-full bg-[#232938] overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] transition-all duration-150"
+                    style={{ width: `${exportProgress}%` }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleDownloadVideo}
+                className="w-full min-h-[44px] inline-flex items-center justify-center gap-2 rounded-xl bg-[#1B2130] hover:bg-[#232B3E] border border-[#2B3347] px-4 py-2.5 text-sm font-medium text-white transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1]"
+              >
+                <Download className="h-4 w-4 text-[#8B5CF6]" aria-hidden="true" />
+                <span>Download Video (.webm)</span>
+              </button>
+            )}
+
+            {exportSuccess && (
+              <div
+                role="status"
+                className="flex items-center gap-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 px-3.5 py-2.5 text-xs text-emerald-200"
+              >
+                <Check className="h-4 w-4 text-emerald-400 shrink-0" aria-hidden="true" />
+                <span>Video exported and downloaded to your device.</span>
+              </div>
+            )}
+
+            {exportError && (
+              <div
+                role="alert"
+                className="flex items-start gap-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 px-3.5 py-2.5 text-xs text-rose-200"
+              >
+                <AlertCircle className="h-4 w-4 text-rose-400 shrink-0 mt-0.5" aria-hidden="true" />
+                <span>{exportError}</span>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
-      {/* Collapsible / Modal Generated Code Viewer */}
+      {/* Generated Code Viewer Modal */}
       {showCodeModal && project && (
         <div
           role="dialog"

@@ -1,3 +1,4 @@
+import { DEFAULT_GEMINI_MODEL } from '@/lib/gemini-models';
 import type {
   AspectRatio,
   InputMode,
@@ -6,8 +7,12 @@ import type {
   VideoScene,
 } from '@/types/studio';
 
-const GEMINI_ENDPOINT =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+function buildGeminiEndpoint(modelId: string): string {
+  const safeModel = modelId.trim() || DEFAULT_GEMINI_MODEL;
+  return `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    safeModel
+  )}:generateContent`;
+}
 
 const VALID_MOTION_STYLES: MotionStyle[] = [
   'kinetic-pop',
@@ -73,7 +78,7 @@ const CONFIG = {
 
 const SCENES = ${serializedScenes};
 
-export function renderFrame(ctx, timeSec) {
+export function renderFrame(ctx, timeSec, showCaptions = true) {
   const t = ((timeSec % CONFIG.totalDurationSec) + CONFIG.totalDurationSec) % CONFIG.totalDurationSec;
   const scene = SCENES.find((s) => t >= s.startSec && t < s.endSec) || SCENES[SCENES.length - 1];
   const duration = Math.max(0.5, scene.endSec - scene.startSec);
@@ -99,12 +104,13 @@ export function renderFrame(ctx, timeSec) {
   ctx.font = '500 28px "Plus Jakarta Sans", system-ui, sans-serif';
   ctx.fillText(scene.subtext, CONFIG.width / 2, CONFIG.height * 0.53);
 
-  // Synced caption bar
-  ctx.fillStyle = scene.accentColor;
-  ctx.fillRect(CONFIG.width * 0.12, CONFIG.height * 0.84, (CONFIG.width * 0.76) * progress, 4);
-  ctx.fillStyle = '#F8FAFC';
-  ctx.font = '600 26px "Plus Jakarta Sans", system-ui, sans-serif';
-  ctx.fillText(scene.caption, CONFIG.width / 2, CONFIG.height * 0.90);
+  if (showCaptions && scene.caption) {
+    ctx.fillStyle = scene.accentColor;
+    ctx.fillRect(CONFIG.width * 0.12, CONFIG.height * 0.84, (CONFIG.width * 0.76) * progress, 4);
+    ctx.fillStyle = '#F8FAFC';
+    ctx.font = '600 26px "Plus Jakarta Sans", system-ui, sans-serif';
+    ctx.fillText(scene.caption, CONFIG.width / 2, CONFIG.height * 0.90);
+  }
   ctx.restore();
 }
 `;
@@ -112,13 +118,36 @@ export function renderFrame(ctx, timeSec) {
 
 export interface PlannerError {
   message: string;
-  code: 'missing_key' | 'invalid_key' | 'quota' | 'network' | 'parse' | 'unknown';
+  code:
+    | 'missing_key'
+    | 'invalid_key'
+    | 'invalid_model'
+    | 'quota'
+    | 'network'
+    | 'parse'
+    | 'unknown';
 }
 
-function mapHttpError(status: number, rawMessage: string): PlannerError {
+function mapHttpError(
+  status: number,
+  rawMessage: string,
+  modelId: string
+): PlannerError {
   const lower = rawMessage.toLowerCase();
+
   if (
-    status === 400 ||
+    status === 404 ||
+    lower.includes('not_found') ||
+    lower.includes('is not found') ||
+    lower.includes('not supported for generatecontent')
+  ) {
+    return {
+      code: 'invalid_model',
+      message: `Model "${modelId}" was not found or is unavailable for your key. Switch to gemini-2.5-flash in Profile or the quick selector. ("${modelId}" মডেলটি পাওয়া যায়নি বা সাপোর্টেড নয় — gemini-2.5-flash বেছে নিন।)`,
+    };
+  }
+
+  if (
     status === 401 ||
     status === 403 ||
     lower.includes('api_key_invalid') ||
@@ -131,13 +160,26 @@ function mapHttpError(status: number, rawMessage: string): PlannerError {
         'Invalid or expired Gemini API key. Please check your key in Profile. (আপনার Gemini API key টি সঠিক নয় বা মেয়াদ শেষ হয়েছে — Profile থেকে যাচাই করুন।)',
     };
   }
-  if (status === 429 || lower.includes('resource_exhausted') || lower.includes('quota')) {
+
+  if (
+    status === 429 ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('quota') ||
+    lower.includes('rate limit')
+  ) {
     return {
       code: 'quota',
-      message:
-        'API rate limit or quota reached. Wait a moment and try again. (API লিমিট শেষ হয়েছে, কিছুক্ষণ পর আবার চেষ্টা করুন।)',
+      message: `Rate limit or quota reached for "${modelId}". Try switching to a free/fast model like gemini-2.5-flash-lite or wait a moment. ("${modelId}" এর API লিমিট শেষ হয়েছে — gemini-2.5-flash-lite ব্যবহার করুন বা কিছুক্ষণ পর চেষ্টা করুন।)`,
     };
   }
+
+  if (status === 400 && lower.includes('model')) {
+    return {
+      code: 'invalid_model',
+      message: `Invalid model ID "${modelId}". Check the custom model name and try again. (মডেল নাম "${modelId}" সঠিক নয়।)`,
+    };
+  }
+
   return {
     code: 'unknown',
     message: rawMessage || 'Gemini API request failed. Please try again.',
@@ -145,16 +187,18 @@ function mapHttpError(status: number, rawMessage: string): PlannerError {
 }
 
 export async function testGeminiRestKey(
-  apiKey: string
-): Promise<{ ok: true; verifiedAt: string } | { ok: false; error: string }> {
-  const trimmed = apiKey.trim();
-  if (!trimmed) {
+  apiKey: string,
+  modelId: string = DEFAULT_GEMINI_MODEL
+): Promise<{ ok: true; verifiedAt: string; model: string } | { ok: false; error: string }> {
+  const trimmedKey = apiKey.trim();
+  const cleanModel = modelId.trim() || DEFAULT_GEMINI_MODEL;
+  if (!trimmedKey) {
     return { ok: false, error: 'Please enter a Gemini API key first.' };
   }
 
   try {
     const res = await fetch(
-      `${GEMINI_ENDPOINT}?key=${encodeURIComponent(trimmed)}`,
+      `${buildGeminiEndpoint(cleanModel)}?key=${encodeURIComponent(trimmedKey)}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -174,11 +218,11 @@ export async function testGeminiRestKey(
     };
 
     if (!res.ok) {
-      const mapped = mapHttpError(res.status, payload.error?.message ?? '');
+      const mapped = mapHttpError(res.status, payload.error?.message ?? '', cleanModel);
       return { ok: false, error: mapped.message };
     }
 
-    return { ok: true, verifiedAt: new Date().toISOString() };
+    return { ok: true, verifiedAt: new Date().toISOString(), model: cleanModel };
   } catch {
     return {
       ok: false,
@@ -211,6 +255,7 @@ interface RawPlanPayload {
 
 export async function generateVideoPlan(params: {
   apiKey: string;
+  model?: string;
   mode: InputMode;
   promptText: string;
   aspectRatio: AspectRatio;
@@ -219,6 +264,8 @@ export async function generateVideoPlan(params: {
   styleDirection?: string;
 }): Promise<VideoProject> {
   const trimmedKey = params.apiKey.trim();
+  const cleanModel = params.model?.trim() || DEFAULT_GEMINI_MODEL;
+
   if (!trimmedKey) {
     const err: PlannerError = {
       code: 'missing_key',
@@ -269,7 +316,7 @@ Rules:
   let response: Response;
   try {
     response = await fetch(
-      `${GEMINI_ENDPOINT}?key=${encodeURIComponent(trimmedKey)}`,
+      `${buildGeminiEndpoint(cleanModel)}?key=${encodeURIComponent(trimmedKey)}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -316,7 +363,7 @@ Rules:
   }
 
   if (!response.ok) {
-    throw mapHttpError(response.status, apiJson.error?.message ?? '');
+    throw mapHttpError(resStatusOrFallback(response.status), apiJson.error?.message ?? '', cleanModel);
   }
 
   const rawText = apiJson.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
@@ -431,4 +478,8 @@ Rules:
     templateId: params.templateId,
     templateTitle: params.templateTitle,
   };
+}
+
+function resStatusOrFallback(status: number): number {
+  return Number.isFinite(status) ? status : 500;
 }

@@ -1,10 +1,12 @@
 'use client';
 
 import { useCallback, useSyncExternalStore } from 'react';
+import { DEFAULT_GEMINI_MODEL } from '@/lib/gemini-models';
 import type { VideoProject, VideoScene } from '@/types/studio';
 
 const API_KEY_STORAGE = 'framescript_gemini_api_key';
 const KEY_VERIFIED_AT_STORAGE = 'framescript_gemini_verified_at';
+const SELECTED_MODEL_STORAGE = 'selectedGeminiModel';
 const PROJECTS_STORAGE = 'projectHistory';
 const LEGACY_PROJECTS_STORAGE = 'framescript_projects_v1';
 
@@ -12,6 +14,7 @@ interface StudioSnapshot {
   hydrated: boolean;
   apiKey: string;
   verifiedAt: string | null;
+  selectedModel: string;
   projects: VideoProject[];
 }
 
@@ -21,17 +24,20 @@ const SERVER_SNAPSHOT: StudioSnapshot = {
   hydrated: false,
   apiKey: '',
   verifiedAt: null,
+  selectedModel: DEFAULT_GEMINI_MODEL,
   projects: EMPTY_PROJECTS,
 };
 
 let cachedKey = '';
 let cachedVerifiedAt: string | null = null;
+let cachedModel = DEFAULT_GEMINI_MODEL;
 let cachedRawProjects: string | null = null;
 let cachedProjects: VideoProject[] = EMPTY_PROJECTS;
 let cachedSnapshot: StudioSnapshot = {
   hydrated: true,
   apiKey: '',
   verifiedAt: null,
+  selectedModel: DEFAULT_GEMINI_MODEL,
   projects: EMPTY_PROJECTS,
 };
 
@@ -60,12 +66,16 @@ function normalizeStoredProject(raw: unknown): VideoProject | null {
     const endSec =
       Number.isFinite(endVal) && endVal > startSec
         ? endVal
-        : startSec + (Number.isFinite(legacyDuration) && legacyDuration > 0 ? legacyDuration : 5);
+        : startSec +
+          (Number.isFinite(legacyDuration) && legacyDuration > 0
+            ? legacyDuration
+            : 5);
     cursor = endSec;
 
-    const bg = Array.isArray(sc.bgGradient) && sc.bgGradient.length >= 2
-      ? ([String(sc.bgGradient[0]), String(sc.bgGradient[1])] as [string, string])
-      : (['#0B0D12', '#1B1E3A'] as [string, string]);
+    const bg =
+      Array.isArray(sc.bgGradient) && sc.bgGradient.length >= 2
+        ? ([String(sc.bgGradient[0]), String(sc.bgGradient[1])] as [string, string])
+        : (['#0B0D12', '#1B1E3A'] as [string, string]);
 
     const motionStyle =
       sc.motionStyle === 'kinetic-pop' ||
@@ -110,7 +120,8 @@ function normalizeStoredProject(raw: unknown): VideoProject | null {
     promptText: typeof item.promptText === 'string' ? item.promptText : '',
     aspectRatio,
     totalDurationSec:
-      Number.isFinite(Number(item.totalDurationSec)) && Number(item.totalDurationSec) > 0
+      Number.isFinite(Number(item.totalDurationSec)) &&
+      Number(item.totalDurationSec) > 0
         ? Number(item.totalDurationSec)
         : cursor,
     theme: typeof item.theme === 'string' ? item.theme : 'Dark Studio Kinetic',
@@ -136,6 +147,7 @@ function subscribe(listener: () => void) {
       event.key === null ||
       event.key === API_KEY_STORAGE ||
       event.key === KEY_VERIFIED_AT_STORAGE ||
+      event.key === SELECTED_MODEL_STORAGE ||
       event.key === PROJECTS_STORAGE
     ) {
       listener();
@@ -153,6 +165,9 @@ function getSnapshot(): StudioSnapshot {
   try {
     const nextKey = window.localStorage.getItem(API_KEY_STORAGE) ?? '';
     const nextVerifiedAt = window.localStorage.getItem(KEY_VERIFIED_AT_STORAGE);
+    const nextModel =
+      window.localStorage.getItem(SELECTED_MODEL_STORAGE)?.trim() ||
+      DEFAULT_GEMINI_MODEL;
     const nextRawProjects =
       window.localStorage.getItem(PROJECTS_STORAGE) ??
       window.localStorage.getItem(LEGACY_PROJECTS_STORAGE);
@@ -160,6 +175,7 @@ function getSnapshot(): StudioSnapshot {
     if (
       nextKey === cachedKey &&
       nextVerifiedAt === cachedVerifiedAt &&
+      nextModel === cachedModel &&
       nextRawProjects === cachedRawProjects
     ) {
       return cachedSnapshot;
@@ -187,10 +203,12 @@ function getSnapshot(): StudioSnapshot {
 
     cachedKey = nextKey;
     cachedVerifiedAt = nextVerifiedAt;
+    cachedModel = nextModel;
     cachedSnapshot = {
       hydrated: true,
       apiKey: cachedKey,
       verifiedAt: cachedVerifiedAt,
+      selectedModel: cachedModel,
       projects: cachedProjects,
     };
 
@@ -249,10 +267,34 @@ export function useStudioStorage() {
     notifyListeners();
   }, []);
 
+  const setSelectedModel = useCallback((modelId: string) => {
+    const trimmed = modelId.trim() || DEFAULT_GEMINI_MODEL;
+    try {
+      window.localStorage.setItem(SELECTED_MODEL_STORAGE, trimmed);
+    } catch {
+      // Ignore storage quota issues
+    }
+    notifyListeners();
+  }, []);
+
   const addProject = useCallback((project: VideoProject) => {
     try {
       const current = getSnapshot().projects;
       const updated = [project, ...current.filter((item) => item.id !== project.id)];
+      window.localStorage.setItem(PROJECTS_STORAGE, JSON.stringify(updated));
+    } catch {
+      // Ignore storage quota issues
+    }
+    notifyListeners();
+  }, []);
+
+  const updateProject = useCallback((project: VideoProject) => {
+    try {
+      const current = getSnapshot().projects;
+      const exists = current.some((item) => item.id === project.id);
+      const updated = exists
+        ? current.map((item) => (item.id === project.id ? project : item))
+        : [project, ...current];
       window.localStorage.setItem(PROJECTS_STORAGE, JSON.stringify(updated));
     } catch {
       // Ignore storage quota issues
@@ -276,11 +318,14 @@ export function useStudioStorage() {
     apiKey: snapshot.apiKey,
     hasApiKey: snapshot.apiKey.length > 0,
     verifiedAt: snapshot.verifiedAt,
+    selectedModel: snapshot.selectedModel,
     projects: snapshot.projects,
     saveApiKey,
     markKeyVerified,
     removeApiKey,
+    setSelectedModel,
     addProject,
+    updateProject,
     deleteProject,
   };
 }

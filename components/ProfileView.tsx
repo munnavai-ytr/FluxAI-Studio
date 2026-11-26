@@ -4,6 +4,7 @@ import { useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
+  Cpu,
   Eye,
   EyeOff,
   Film,
@@ -13,6 +14,10 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react';
+import {
+  CURATED_GEMINI_MODELS,
+  findCuratedModel,
+} from '@/lib/gemini-models';
 import { testGeminiRestKey } from '@/lib/gemini-planner';
 import type { VideoProject } from '@/types/studio';
 
@@ -20,10 +25,12 @@ interface ProfileViewProps {
   apiKey: string;
   hasApiKey: boolean;
   verifiedAt: string | null;
+  selectedModel: string;
   projects: VideoProject[];
   onSaveApiKey: (key: string, verifiedAt?: string | null) => void;
   onMarkKeyVerified: (timestamp: string) => void;
   onRemoveApiKey: () => void;
+  onSelectModel: (modelId: string) => void;
   onStartNewProject: () => void;
   onOpenProject: (project: VideoProject) => void;
   onDeleteProject: (projectId: string) => void;
@@ -33,10 +40,12 @@ export function ProfileView({
   apiKey,
   hasApiKey,
   verifiedAt,
+  selectedModel,
   projects,
   onSaveApiKey,
   onMarkKeyVerified,
   onRemoveApiKey,
+  onSelectModel,
   onStartNewProject,
   onOpenProject,
   onDeleteProject,
@@ -48,6 +57,13 @@ export function ProfileView({
     type: 'success' | 'error' | 'info';
     message: string;
   } | null>(null);
+
+  const isPreset = Boolean(findCuratedModel(selectedModel));
+  const [customModeOpen, setCustomModeOpen] = useState(!isPreset);
+  const [customModelDraft, setCustomModelDraft] = useState(
+    !isPreset ? selectedModel : ''
+  );
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
 
   function handleSaveKey() {
     const trimmed = draftKey.trim();
@@ -63,7 +79,8 @@ export function ProfileView({
     setDraftKey(trimmed);
     setFeedback({
       type: 'info',
-      message: 'API key saved locally in your browser. Click Test Connection to verify it.',
+      message:
+        'API key saved locally in your browser. Click Test Connection to verify it.',
     });
   }
 
@@ -80,7 +97,7 @@ export function ProfileView({
     setIsTesting(true);
     setFeedback(null);
 
-    const result = await testGeminiRestKey(keyToTest);
+    const result = await testGeminiRestKey(keyToTest, selectedModel);
     setIsTesting(false);
 
     if (!result.ok) {
@@ -96,7 +113,7 @@ export function ProfileView({
     setDraftKey(keyToTest);
     setFeedback({
       type: 'success',
-      message: 'Connected successfully using gemini-2.5-flash.',
+      message: `Connected successfully using ${result.model}.`,
     });
   }
 
@@ -110,6 +127,22 @@ export function ProfileView({
     });
   }
 
+  function handleChoosePreset(modelId: string) {
+    setCustomModeOpen(false);
+    setModelNotice(null);
+    onSelectModel(modelId);
+  }
+
+  function handleApplyCustomModel() {
+    const trimmed = customModelDraft.trim();
+    if (!trimmed) {
+      setModelNotice('Enter a custom Gemini model ID before applying.');
+      return;
+    }
+    onSelectModel(trimmed);
+    setModelNotice(`Active model set to "${trimmed}".`);
+  }
+
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       <header className="space-y-1.5 border-b border-[#232938] pb-5">
@@ -117,7 +150,7 @@ export function ProfileView({
           Profile &amp; BYOK Settings
         </h1>
         <p className="text-sm sm:text-base text-slate-400">
-          Manage your local Gemini API key and replay saved video projects.
+          Manage your local Gemini API key, select a model, and replay saved projects.
         </p>
       </header>
 
@@ -132,7 +165,8 @@ export function ProfileView({
               Gemini API Key
             </h2>
             <p className="text-xs sm:text-sm text-slate-400">
-              Saved only in this browser&apos;s localStorage. Never sent to any external database.
+              Saved only in this browser&apos;s localStorage. Tested against{' '}
+              <span className="font-mono text-slate-300">{selectedModel}</span>.
             </p>
           </div>
 
@@ -257,6 +291,129 @@ export function ProfileView({
             <span>{feedback.message}</span>
           </div>
         )}
+      </section>
+
+      {/* Gemini Model Selector */}
+      <section
+        aria-label="Gemini Model Selector"
+        className="rounded-2xl bg-[#141821] border border-[#232938] p-5 sm:p-6 space-y-4"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="space-y-1">
+            <h2 className="font-display text-lg font-semibold text-white">
+              Gemini Model Selection
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-400">
+              Free-tier-friendly fast models are listed first. Saved locally in your browser.
+            </p>
+          </div>
+          <span className="text-xs font-mono text-[#A5B4FC] self-start sm:self-auto">
+            {selectedModel}
+          </span>
+        </div>
+
+        <div className="space-y-2.5">
+          {CURATED_GEMINI_MODELS.map((preset) => {
+            const isSelected = !customModeOpen && selectedModel === preset.id;
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => handleChoosePreset(preset.id)}
+                aria-pressed={isSelected}
+                className={`w-full min-h-[56px] flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border p-4 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1] ${
+                  isSelected
+                    ? 'bg-[#6366F1]/12 border-[#6366F1]'
+                    : 'bg-[#0B0D12] border-[#232938] hover:border-[#343D54]'
+                }`}
+              >
+                <div className="min-w-0 space-y-0.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-display text-sm font-semibold text-white">
+                      {preset.label}
+                    </span>
+                    <span className="font-mono text-xs text-slate-400">
+                      {preset.id}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">{preset.description}</p>
+                </div>
+
+                <span
+                  className={`self-start sm:self-center shrink-0 rounded-md border px-2.5 py-1 text-[11px] font-medium whitespace-nowrap ${
+                    preset.tierTone === 'free'
+                      ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                      : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/30'
+                  }`}
+                >
+                  {preset.badge}
+                </span>
+              </button>
+            );
+          })}
+
+          {/* Custom Model Option */}
+          <div
+            className={`rounded-xl border p-4 space-y-3 transition-colors ${
+              customModeOpen
+                ? 'bg-[#6366F1]/10 border-[#6366F1]'
+                : 'bg-[#0B0D12] border-[#232938]'
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setCustomModeOpen(true);
+                setModelNotice(null);
+              }}
+              aria-pressed={customModeOpen}
+              className="w-full flex items-center justify-between gap-3 text-left focus-visible:outline-none"
+            >
+              <div className="flex items-center gap-2.5">
+                <Cpu className="h-4 w-4 text-[#8B5CF6] shrink-0" aria-hidden="true" />
+                <div>
+                  <span className="block font-display text-sm font-semibold text-white">
+                    Custom Model ID
+                  </span>
+                  <span className="block text-xs text-slate-400">
+                    Type any specific Gemini model name manually
+                  </span>
+                </div>
+              </div>
+              <span className="text-xs font-medium text-slate-300 whitespace-nowrap">
+                {customModeOpen ? 'Active' : 'Configure'}
+              </span>
+            </button>
+
+            {customModeOpen && (
+              <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+                <input
+                  type="text"
+                  aria-label="Custom Gemini model ID"
+                  value={customModelDraft}
+                  onChange={(e) => {
+                    setCustomModelDraft(e.target.value);
+                    if (modelNotice) setModelNotice(null);
+                  }}
+                  placeholder="e.g. gemini-2.5-flash-preview-05-20"
+                  spellCheck={false}
+                  className="flex-1 min-h-[44px] rounded-xl bg-[#0B0D12] border border-[#232938] focus:border-[#6366F1] px-3.5 py-2 font-mono text-xs sm:text-sm text-white placeholder:text-slate-600 outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={handleApplyCustomModel}
+                  className="min-h-[44px] rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] px-4 py-2 text-xs sm:text-sm font-semibold text-white hover:opacity-95 transition-opacity whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B5CF6]"
+                >
+                  Apply Model
+                </button>
+              </div>
+            )}
+
+            {modelNotice && (
+              <p className="text-xs text-[#C4B5FD]">{modelNotice}</p>
+            )}
+          </div>
+        </div>
       </section>
 
       {/* Project History */}
