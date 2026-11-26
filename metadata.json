@@ -1,0 +1,6 @@
+{
+  "name": "FrameScript",
+  "description": "Code-driven AI video creator studio for kinetic typography, tech explainers, and short-form motion reels.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
